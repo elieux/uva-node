@@ -2,6 +2,7 @@ const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
 const sprintf = require('sprintf').sprintf;
+const spawn = require('child_process').spawn;
 const util = require('./util');
 const Account = require('./account');
 const Adapter = require('./adapter');
@@ -208,6 +209,115 @@ function executeLine(line, doneFn)
         var subAction = toks[1].toLowerCase();
         tplHandle(subAction);
         break;
+
+    case 'compare':
+        if (toks.length < 3)
+        {
+            console.log('Syntax: compare [<times>] <executable1> <executable2> <generator command line>');
+            break;
+        }
+        
+        toks.shift();
+        var times = 1;
+        if (!isNaN(parseInt(toks[0], 10))) {
+            times = parseInt(toks.shift(), 10);
+        }
+        var exe1 = toks.shift();
+        var exe2 = toks.shift();
+        var generator = toks.shift();
+        var generatorArgs = toks;
+        
+        var exe1Data, exe2Data, genData;
+        
+        var go = function(doneFn) {
+            var exe1Data = [];
+            var exe2Data = [];
+            var genData = [];
+            
+            var runningProcesses = 3;
+            var onExit = function() {
+                runningProcesses--;
+                if (runningProcesses == 0) {
+                    genData = genData.join('');
+                    exe1Data = exe1Data.join('');
+                    exe2Data = exe2Data.join('');
+                    if (exe1Data != exe2Data) {
+                        console.log('There was a difference in output:');
+                        console.log('program 1:');
+                        console.log(exe1Data);
+                        console.log('program 2:');
+                        console.log(exe2Data);
+                        console.log('Input was:');
+                        console.log(genData);
+                        doneFn(true);
+                    } else {
+                        console.log('No differences in output.');
+                        doneFn();
+                    }
+                }
+            };
+            
+            var exe1Proc = spawn(exe1);
+            exe1Proc.on('error', function(err) {
+                console.log('Program 1 could not start: %s', err.message);
+                onExit();
+            });
+            exe1Proc.on('exit', function(code, signal) {
+                if (code != 0 || signal) {
+                    console.log('Program 1 exited with errors: code %d, signal %s', code, signal);
+                }
+                onExit();
+            });
+            exe1Proc.stdout.on('data', function(data) {
+                exe1Data.push(data);
+            });
+            
+            var exe2Proc = spawn(exe2);
+            exe2Proc.on('error', function(err) {
+                console.log('Program 2 could not start: %s', err.message);
+                onExit();
+            });
+            exe2Proc.on('exit', function(code, signal) {
+                if (code != 0 || signal) {
+                    console.log('Program 2 exited with errors: code %d, signal %s', code, signal);
+                }
+                onExit();
+            });
+            exe2Proc.stdout.on('data', function(data) {
+                exe2Data.push(data);
+            });
+            
+            var genProc = spawn(generator, generatorArgs);
+            genProc.on('error', function(err) {
+                console.log('Generator could not start: %s', err.message);
+                onExit();
+            });
+            genProc.on('exit', function(code, signal) {
+                if (code != 0 || signal) {
+                    console.log('Generator process exited with errors: code %d, signal %s', code, signal);
+                }
+                onExit();
+                exe1Proc.stdin.end();
+                exe2Proc.stdin.end();
+            });
+            genProc.stdout.on('data', function(data) {
+                genData.push(data);
+                exe1Proc.stdin.write(data);
+                exe2Proc.stdin.write(data);
+            });
+        };
+        
+        var onFinish = function(differenceFound) {
+            times--;
+            if (times == 0 || differenceFound) {
+                doneFn();
+            } else {
+                go(onFinish);
+            }
+        };
+        
+        go(onFinish)
+        return;
 
     case 'send':
         var curAdap = getCurrentAdapter();
